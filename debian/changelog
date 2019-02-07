@@ -1,0 +1,13 @@
+libnet-as2-psgi-perl (0.95-1) stable; urgency=low
+
+  * Create PSGI application for AS2 server
+
+  * Include tests and examples
+
+ -- Andrew Maguire <ajm@cpan.org>  Thu, 21 Feb 2019 14:14:00 +1300
+
+libnet-as2-psgi-perl (0.001-1) unstable; urgency=low
+
+  * Initial release.
+
+ -- Andrew Maguire <ajm@cpan.org>  Wed, 30 Jan 2019 19:26:24 +1300
