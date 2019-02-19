@@ -67,12 +67,14 @@ receipt for the data back to the sender.
 use Carp;
 
 use File::Path   qw(mkpath);
-use JSON::XS;
+use JSON::XS     qw();
 use POSIX        qw(strftime);
 
 use Plack::Request;
 
 use Net::AS2;
+use Net::AS2::PSGI::FileHandler;
+use Net::AS2::PSGI::StateHandler;
 
 # AS2 Directories
 our $CERTIFICATE_DIR;
@@ -182,7 +184,7 @@ Class Method for initialising the AS2 directory structures.
 =cut
 
 sub init {
-    my ($self, $config, $log) = @_;
+    my ($class, $config, $log) = @_;
 
     # initialise the package variables, unless already defined.
     $CERTIFICATE_DIR //= $config->{certificate_dir};
@@ -200,32 +202,6 @@ sub init {
     return;
 }
 
-=item to_psgi ( api )
-
-Class Method returning PSGI application for 'POST'ing to the given C<api> .
-
-C<api> is one of:
-
-=over 4
-
-=item send
-
-=item receive
-
-=item send_mdn
-
-=item receive_mdn
-
-=back
-
-=cut
-
-sub to_psgi {
-    my ($self, $api) = @_;
-
-    return $self->_psgi('POST', $api);
-}
-
 =item view_psgi ()
 
 Class Method returning PSGI application for 'GET'ting a view of
@@ -234,7 +210,16 @@ partnership data.
 =cut
 
 sub view_psgi {
-    return shift->_psgi('GET', 'view');
+    my ($class) = @_;
+
+    return sub {
+        my $request = Plack::Request->new(shift);
+
+        return _error_bad_request($request, "Called HTTP Method is not GET")->finalize
+          unless $request->method eq 'GET';
+
+        return $class->view($request)->finalize;
+    };
 }
 
 =item app_psgi ()
@@ -244,7 +229,16 @@ Class Method returning PSGI application for AS2.
 =cut
 
 sub app_psgi {
-    return shift->_psgi('POST', 'app');
+    my ($class) = @_;
+
+    return sub {
+        my $request = Plack::Request->new(shift);
+
+        return _error_bad_request($request, "Called HTTP Method is not POST")->finalize
+          unless $request->method eq 'POST';
+
+        return $class->app($request)->finalize;
+    };
 }
 
 =item app ( request )
@@ -256,16 +250,16 @@ API Method implementing AS2.
 =cut
 
 sub app {
-    my ($self, $request) = @_;
+    my ($class, $request) = @_;
 
     my ($api, $new_path) = $request->path =~ m{/(\w+)(/.*)};
 
-    return $request->new_response(HTTP_BAD_REQUEST)
+    return _error_bad_request($request, 'No API function: "' . ($api // '') . '"')
       unless $api && $new_path && exists $API_FUNCTIONS{$api};
 
     $request->env->{PATH_INFO} = $new_path;
 
-    return $self->$api($request);
+    return $class->$api($request);
 }
 
 =head1 API METHODS
@@ -305,41 +299,41 @@ The subject is an arbitrary brief one-line string.
 =cut
 
 sub send { ## no critic (ProhibitBuiltinHomonyms)
-    my ($self, $request) = @_;
+    my ($class, $request) = @_;
 
     my $log     = $request->logger;
     my $headers = $request->headers;
 
     my $message_id = $headers->header('MessageId');
-    if (! $message_id) {
-        $log->({ level => 'error', message => "send not given MessageId header" }) if $log;
-        return $request->new_response(404);
-    }
-    $log->({ level => 'debug', message => "$message_id : Starting to send data" }) if $log;
+    return _error_bad_request($request, 'send not given MessageId header') unless $message_id;
 
-    my $partnership = _partnership($request);
-    $log->({ level => 'debug', message => "$message_id : to $partnership" }) if $log;
+    my $partnership = _partnership($request, $message_id, 'Starting to send data');
 
     my $as2 = _as2($partnership);
 
     $message_id = $as2->get_message_id($message_id);
 
-    my ($sending, $sent) = _send_directories($request, $message_id);
+    my $state = Net::AS2::PSGI::StateHandler->new($message_id, $log);
 
+    my $handler = $as2->{FileHandlerClass}->new($message_id, $log) or die "FileHandlerClass is not configured";
+
+    my ($sending, $sent) = _send_directories($request, $message_id, $partnership);
+
+    my $state_content = JSON::XS->new->ascii->canonical->encode({ mdn => $as2->{Mdn}, pending => \1 });
+
+    my $message_file_state = $state->save($state_content, $sending);
+
+    my $content      = $request->content;
     my %mime_options = (
         'MessageId'    => "<$message_id>",
         'Type'         => $headers->header('Content-Type') // '',
         'Subject'      => $headers->header('Subject')      // '',
     );
-
-    my $content = $request->content;
-
-    my $message_file = _message_file($sending, $message_id);
-    _save_file($message_file, JSON::XS->new->ascii->canonical->encode({ mdn => $as2->{Mdn}, pending => \1 }) );
-
-    $log->({ level => 'debug', message => "<$message_id> : Created message file $message_file" }) if $log;
-
     my ($mdn, $mic, $mic_alg) = $as2->send($content, %mime_options);
+
+    my $sending_file = $handler->file($sending);
+
+    $handler->sending($content, $sending_file);
 
     if ($as2->{Mdn} eq 'async') {
         my $response = $request->new_response();
@@ -347,13 +341,19 @@ sub send { ## no critic (ProhibitBuiltinHomonyms)
         if ($mdn->{status_text} =~ qr{HTTP failure: (\d+) (.*)}) {
             $response->code($1);
             $response->body($2);
-            my $body = JSON::XS->new->ascii->canonical->encode({ %$mdn }); # convert to simple hash
-            _save_file($message_file, $body);
-            my $failed_message_file = _message_file($sent, $message_id, '.failed');
-            rename $message_file, $failed_message_file;
-            $log->({ level => 'debug', message => "<$message_id> : Moved message file to $failed_message_file ($mdn->{status_text})" }) if $log;
+
+            # overwrite state file in SENDING directory
+            $state_content = JSON::XS->new->ascii->canonical->encode({ %$mdn });
+
+            $message_file_state = $state->save($state_content, $sending); # convert to simple hash
+
+            my $failed_message_file = $state->move($message_file_state, $sent, '.failed', " ($mdn->{status_text})");
         }
         elsif ($mdn->{unparsable}) {
+            my $sending_file = $handler->file($sending);
+
+            $handler->sending($content, $sending_file);
+
             $response->code(HTTP_OK);
         }
 
@@ -377,12 +377,12 @@ sub send { ## no critic (ProhibitBuiltinHomonyms)
         'Content-Length'    => length($body),
     ]);
 
-    my $ext = not $successful ? '.failed' : '';
-    _save_file($message_file, $body);
-    my $message_file_ext = _message_file($sent, $message_id, $ext);
-    rename $message_file, $message_file_ext;
+    $message_file_state = $state->save($body, $sending);
 
-    $log->({ level => 'debug', message => "<$message_id> : Moved message file to $message_file_ext" }) if $log;
+    my $ext = $successful ? '' : '.failed';
+    $state->move($message_file_state, $sent, $ext, '(send)');
+
+    $handler->sent($sending_file, $sent, $successful);
 
     return $response;
 }
@@ -445,69 +445,56 @@ once the data has been received.
 =cut
 
 sub receive {
-    my ($self, $request) = @_;
+    my ($class, $request) = @_;
 
     my $log     = $request->logger;
     my $headers = $request->headers;
 
     my $message_id = $headers->header('Message-Id');
-    if (! $message_id) {
-        $log->({ level => 'error', message => "receive not given Message-Id header" }) if $log;
-        return $request->new_response(404);
-    }
-    $log->({ level => 'debug', message => "$message_id : Starting to receive data" }) if $log;
+    return _error_bad_request($request, 'receive not given Message-Id header') unless $message_id;
 
-    my $partnership = _partnership($request);
-    $log->({ level => 'debug', message => "$message_id : from $partnership" }) if $log;
+    my $partnership = _partnership($request, $message_id, 'Starting to receive data');
 
     my $as2 = _as2($partnership);
 
     $message_id = $as2->get_message_id($message_id);
 
-    my ($receiving, $received) = _receive_directories($request, $message_id);
+    my $state = Net::AS2::PSGI::StateHandler->new($message_id, $log);
+
+    my $handler = $as2->{FileHandlerClass}->new($message_id, $log) or die "FileHandlerClass is not configured";
+
+    my ($receiving, $received) = _receive_directories($request, $message_id, $partnership);
 
     # Decode the incoming HTTP request as AS2 Message.
     my $message = $as2->decode_message($headers, $request->content);
 
-    if ($message->is_mdn_async) {
-        $log->({ level => 'info', message => "<$message_id> : Receiving async message from $partnership" }) if $log;
+    my $message_file_state = $state->save($message->serialized_state, $receiving);
 
-        #        $log->({ level => 'debug', message => "<$message_id> : Receiving async content:\n------\n" . $message->content . "\n------\n" }) if $log;
-
-        my $message_state = "$receiving/$message_id.state";
-        _save_file($message_state, $message->serialized_state);
-        $log->({ level => 'debug', message => "<$message_id> : Created serialized state file $message_state" }) if $log;
-
-        my $message_file = _message_file($receiving, $message_id);
-        _save_file($message_file, $message->content); # TODO resolve warn/error if empty
-
-        $log->({ level => 'debug', message => "<$message_id> : Created serialized message file $message_file" }) if $log;
-
-        return $request->new_response(HTTP_OK);
-    }
-
-    $log->({ level => 'info',  message => "<$message_id> : Receiving sync message from $partnership" }) if $log;
-
-#    $log->({ level => 'debug', message => "<$message_id> : Receiving sync content:\n------\n" . $message->content . "\n------\n" }) if $log;
-
-    my ($h, $c) = $as2->prepare_sync_mdn(
-        $message->is_success ?
-            Net::AS2::MDN->create_success($message) :
-            Net::AS2::MDN->create_from_unsuccessful_message($message)
-   );
-
-    my $ext = ! $message->is_success ? '.failed' : '';
+    my $receiving_file = $handler->receiving($message->content, $receiving);
 
     my $response = $request->new_response(HTTP_OK);
-    $response->headers($h);
-    $response->body($c);
 
-    my $message_file = _message_file($receiving, $message_id);
-    _save_file($message_file, $message->content);
-    my $message_file_ext = _message_file($received, $message_id, $ext);
-    rename $message_file, $message_file_ext;
+    my $mode = $message->is_mdn_async ? 'async' : 'sync';
 
-    $log->({ level => 'debug', message => "<$message_id> : Moved message file to $message_file_ext" }) if $log;
+    $log->({ level => 'info',  message => "<$message_id> : Receiving $mode message from $partnership" }) if $log;
+
+    # $log->({ level => 'debug', message => "<$message_id> : Receiving sync content:\n------\n" . $message->content . "\n------\n" }) if $log;
+
+    if ($mode eq 'sync') {
+        my ($h, $c) = $as2->prepare_sync_mdn(
+            $message->is_success ?
+                Net::AS2::MDN->create_success($message) :
+                Net::AS2::MDN->create_from_unsuccessful_message($message)
+        );
+
+        $response->headers($h);
+        $response->body($c);
+
+        my $ext = $message->is_success ? '' : $message->is_failure ? '.failed' : '.error';
+        $state->move($message_file_state, $received, $ext, '(receive)');
+
+        $handler->received($receiving_file, $received, $message);
+    }
 
     return $response;
 }
@@ -547,32 +534,31 @@ is not indicating success, the data filename is also renamed to have a
 =cut
 
 sub MDNsend {
-    my ($self, $request) = @_;
+    my ($class, $request) = @_;
 
     my $log     = $request->logger;
     my $headers = $request->headers;
 
     my $message_id = $headers->header('MessageId');
-    if (! $message_id) {
-        $log->({ level => 'error', message => "MDNsend not given MessageId header" }) if $log;
-        return $request->new_response(404);
-    }
-    $log->({ level => 'debug', message => "$message_id : Starting to send MDN receipt" }) if $log;
+    return _error_bad_request($request, 'MDNsend not given MessageId header') unless $message_id;
 
-    my $partnership = _partnership($request);
-    $log->({ level => 'debug', message => "$message_id : to $partnership" }) if $log;
+    my $partnership = _partnership($request, $message_id, 'Starting to send MDN receipt');
 
     my $as2 = _as2($partnership);
 
     $message_id = $as2->get_message_id($message_id);
 
-    my ($receiving, $received) = _receive_directories($request, $message_id);
-    my $state_file = "$receiving/$message_id.state";
-    $log->({ level => 'debug', message => "<$message_id> : About to read " . (-r $state_file ? 'readable' : 'not readable') . " file $state_file" }) if $log;
-    my $state = _slurp_file($state_file);
-    $log->({ level => 'debug', message => "<$message_id> : Read MDN contact details for $partnership" }) if $log;
+    my $state = Net::AS2::PSGI::StateHandler->new($message_id, $log);
 
-    my $message = Net::AS2::Message->create_from_serialized_state($state); # TODO handle die from here
+    my $handler = $as2->{FileHandlerClass}->new($message_id, $log) or die "FileHandlerClass is not configured";
+
+    my ($receiving, $received) = _receive_directories($request, $message_id, $partnership);
+
+    my $state_file = $state->file($receiving);
+
+    my $state_content = $state->retrieve($state_file, 'Read MDN contact details');
+
+    my $message = Net::AS2::Message->create_from_serialized_state($state_content);
     my $mdn_resp = $as2->send_async_mdn(
         $message->is_success ?
                     Net::AS2::MDN->create_success($message) :
@@ -580,40 +566,40 @@ sub MDNsend {
         $message->message_id,
     );
 
+#    my $receiving_file = $handler->receiving($message->content, $receiving);
+#
+#    $handler->received($receiving_file, $received, $message);
+
     my $code;
     if ($mdn_resp->is_success) {
         $code = HTTP_OK;
 
-        my $ext = $message->is_success ? '' : $message->is_error ? '.error' : '.failed';
+        $state->move($state_file, $received, '.sent', '(MDNsend)');
 
-        my $message_file = _message_file($receiving, $message_id);
-        my $message_file_ext = _message_file($received, $message_id, $ext);
-        rename $message_file, $message_file_ext;
-        $log->({ level => 'debug', message => "<$message_id> : Moved message file to $message_file_ext" }) if $log;
-
-        my $message_file_state = _message_file($received, $message_id, '.state.sent');
-        rename $state_file, $message_file_state;
-        $log->({ level => 'debug', message => "<$message_id> : Moved state file to $message_file_state" }) if $log;
-
-        $log->({ level => 'info', message => "<$message_id> : Sent MDN receipt to $partnership" }) if $log;
+        $state->logger(info => "Sent MDN receipt to $partnership") if $log;
     }
     else {
         $code = $mdn_resp->code;
 
-        my $now = strftime("%F-%H-%M-%S", localtime);
-        my $error_file = "$received/$message_id.mdn.error";
-
-        _save_file($error_file, $code . "\n$now\n" . $mdn_resp->content);
-        $log->({ level => 'debug', message => "<$message_id> : Creating failed to send MDN file $error_file" }) if $log;
+        my $status_text = $mdn_resp->message;
 
         my $ext = $message->is_error ? '.error' : '.failed';
 
-        my $message_file = _message_file($receiving, $message_id);
-        my $message_file_ext = _message_file($received, $message_id, $ext);
-        rename $message_file, $message_file_ext;
+        my $content = $code . "\n" . strftime("%F-%H-%M-%S", localtime) . "\n" . $mdn_resp->content;
 
-        $log->({ level => 'debug', message => "<$message_id> : Moved message file to $message_file_ext" }) if $log;
+        my $message_state_failure = $state->save($content, $receiving, ".response.$ext");
+
+        $state->move($message_state_failure, $received, ".response.$ext", $status_text);
+
+        $state->logger(warn => "Failed to send MDN receipt. See $message_state_failure") if $log;
+
+        $state->move($state_file, $received, $ext, $status_text);
+
     }
+
+    my $receiving_file = $handler->file($receiving);
+
+    $handler->received($receiving_file, $received, $message);
 
     return $request->new_response($code);
 }
@@ -670,55 +656,58 @@ This value should match the MyId in the C<partnership.json> file.
 =cut
 
 sub MDNreceive {
-    my ($self, $request) = @_;
+    my ($class, $request) = @_;
 
     my $log     = $request->logger;
     my $headers = $request->headers;
 
     my $message_id = $headers->header('Message-Id');
-    if (! $message_id) {
-        $log->({ level => 'error', message => "MDNreceive not given Message-Id header" }) if $log;
-        return $request->new_response(404);
-    }
-    $log->({ level => 'debug', message => "$message_id : Starting to receive MDN" }) if $log;
+    return _error_bad_request($request, 'MDNreceive not given Message-Id header') unless $message_id;
 
-    my $partnership = _partnership($request);
-    $log->({ level => 'debug', message => "$message_id : from $partnership" }) if $log;
+    my $partnership = _partnership($request, $message_id, 'Starting to receive MDN');
 
     my $as2 = _as2($partnership);
 
     $message_id = $as2->get_message_id($message_id);
 
-    my ($sending, $sent) = _send_directories($request, $message_id);
+    my $state = Net::AS2::PSGI::StateHandler->new($message_id, $log);
+
+    my $handler = $as2->{FileHandlerClass}->new($message_id, $log) or die "FileHandlerClass is not configured";
+
+    my ($sending, $sent) = _send_directories($request, $message_id, $partnership);
 
     my $mdn = $as2->decode_mdn($headers, $request->content);
 
     if (my $original_message_id = $mdn->original_message_id) {
-        $log->({ level => 'debug', message => "<$message_id> : MDN original message ID <$original_message_id> from $partnership" }) if $log;
+        $state->logger(debug => "MDN original message ID <$original_message_id> from $partnership") if $log;
+
+        # This code silently allows for repeated MDN receive requests
+
+        $state->message_id($original_message_id);
 
         my $body = JSON::XS->new->ascii->canonical->encode({ %$mdn }); # convert to simple hash
 
-        my $message_file = _message_file($sending, $original_message_id);
-        _save_file($message_file, $body);
+        my $message_file_state = $state->save($body, $sending);
 
-        my $message_file_sent = _message_file($sent, $original_message_id);
-        if (-f $message_file_sent) {
-            $log->({ level => 'warn', message => "<$message_id> : MDN already received, file exists: $message_file_sent" }) if $log;
+        my $message_file_state_sent = $state->file($sent);
+        $state->logger(warn => "MDN already received, file exists: $message_file_state_sent")
+          if $log && -f $message_file_state_sent;
+
+        my $ext = $mdn->is_success ? '' : '.failed';
+        $state->move($message_file_state, $sent, $ext, '(MDNreceive)');
+
+        $state->logger(info => "Received MDN$ext receipt from $partnership") if $log;
+
+        my $sending_file = $handler->file($sending);
+
+        if (-f $sending_file) {
+            $handler->sent($sending_file, $sent, $mdn->is_success);
         }
-
-        my $ext = ! $mdn->is_success ? '.failed' : '';
-        my $message_file_ext = _message_file($sent, $original_message_id, $ext);
-
-        rename $message_file, $message_file_ext;
-        $log->({ level => 'debug', message => "<$message_id> : Moved completed message file to $message_file_ext" }) if $log;
-
-        $log->({ level => 'info', message => "<$message_id> : Received MDN$ext receipt from $partnership" }) if $log;
     }
     else {
-        my $receipt_file = _message_file($sending, $message_id, '.UNKNOWN.MDN');
-        _save_file($receipt_file, $request->content);
+        my $receipt_file = $state->save($request->content, $sending, '.UNKNOWN.MDN');
 
-        $log->({ level => 'debug', message => "<$message_id> : MDN receipt did not contain valid original_message_id" }) if $log;
+        $state->logger(debug => 'MDN receipt did not contain valid original_message_id') if $log;
     }
 
     return $request->new_response(HTTP_OK);
@@ -739,11 +728,9 @@ displayed, replaced instead by "...".
 =cut
 
 sub view {
-    my ($self, $request) = @_;
+    my ($class, $request) = @_;
 
-    my $log = $request->logger;
-
-    my $partnership = _partnership($request);
+    my $partnership = _partnership($request, '<view>', 'View API');
 
     my $as2 = _as2($partnership);
 
@@ -767,51 +754,23 @@ sub view {
 
 # INTERNAL FUNCTIONS
 #
-# _psgi ( api, HTTP_method )
-#
-# return a PSGI subroutine
-#
-sub _psgi {
-    my ($self, $method, $api) = @_;
 
-    return sub {
-        my $request = Plack::Request->new(shift);
-
-        if ($request->method ne $method) {
-            if (my $log = $request->logger) {
-                $log->({ level => 'error', message => "Called HTTP Method is not $method" });
-            }
-            return $request->new_response(HTTP_BAD_REQUEST)->finalize;
-        }
-
-        return $self->$api($request)->finalize;
-    };
-}
-
-# _partnership ( request )
+# _partnership ( request, message_id, text )
 #
 # get partnership from URI.
 #
 sub _partnership {
-    my $request = shift;
+    my ($request, $message_id, $text) = @_;
 
-    my $partnership = $request->path =~ s{^/}{}r;
+    my $log = $request->logger;
+
+    $log->({ level => 'debug', message => "$message_id : $text" }) if $log;
+
+    (my $partnership = $request->path) =~ s{^/}{};
+
+    $log->({ level => 'debug', message => "$message_id : from $partnership" }) if $log;
+
     return $partnership;
-}
-
-# _message_file ( dir, message_id, ext )
-#
-# Return suitable file name for given message id and optional extension.
-#
-
-sub _message_file {
-    my ($dir, $message_id, $ext) = @_;
-
-    $ext //= '';
-
-    $message_id =~ s{[^-@.a-zA-Z0-9]}{_}g;
-
-    return "$dir/$message_id$ext";
 }
 
 # _as2 ( partnership )
@@ -827,24 +786,31 @@ sub _message_file {
 sub _as2 {
     my ($partnership) = @_;
 
-    my $json_file = "$PARTNERSHIP_DIR/$partnership.json";
+    my $file = "$PARTNERSHIP_DIR/$partnership.json";
 
-    croak "No partnership file $json_file" unless -f $json_file;
+    croak "No partnership file $file" unless -f $file;
 
-    my $json   = _slurp_file($json_file);
+    local $/ = undef;
 
-    my $params = JSON::XS::decode_json($json);
+    open my $fh, '<', $file;
+    my $json = scalar(<$fh>);
+    close $fh;
+
+    my $params = JSON::XS->new->relaxed->decode($json);
 
     # Set the certificate directory unless already given for this specific partnership
     $params->{CertificateDirectory} //= $CERTIFICATE_DIR;
+
+    # Set the default File Handling Class
+    $params->{FileHandlerClass} //= 'Net::AS2::PSGI::FileHandler';
 
     return Net::AS2->new(%$params); # Will die if the parameters are not valid
 }
 
 sub _send_directories {
-    my ($request, $message_id) = @_;
+    my ($request, $message_id, $partnership) = @_;
 
-    my $parent  = $FILE_DIR . '/' . _partnership($request);
+    my $parent  = $FILE_DIR . '/' . $partnership;
     my $sending = "$parent/SENDING";
     my $sent    = "$parent/SENT";
 
@@ -854,9 +820,9 @@ sub _send_directories {
 }
 
 sub _receive_directories {
-    my ($request, $message_id) = @_;
+    my ($request, $message_id, $partnership) = @_;
 
-    my $parent    = $FILE_DIR . '/' . _partnership($request);
+    my $parent    = $FILE_DIR . '/' . $partnership;
     my $receiving = "$parent/RECEIVING";
     my $received  = "$parent/RECEIVED";
 
@@ -890,24 +856,14 @@ sub _create_directories {
     return;
 }
 
-sub _save_file {
-    my ($file, $content) = @_;
-    open my $fh, '>', $file;
-    print $fh $content;
-    close $fh;
+sub _error_bad_request {
+    my ($request, $message) = @_;
 
-    return;
-}
+    if (my $log = $request->logger) {
+        $log->({ level => 'error', message => $message });
+    }
 
-sub _slurp_file {
-    my($file) = @_;
-    local $/ = undef;
-
-    open my $fh, '<', $file;
-    my $content = scalar(<$fh>);
-    close $fh;
-
-    return $content;
+    return $request->new_response(HTTP_BAD_REQUEST);
 }
 
 1;
@@ -939,7 +895,7 @@ This is free software; you can redistribute it and/or modify it under the same t
 
 =head1 BUGS AND LIMITATIONS
 
-No bugs known
+No known bugs.
 
 The AS2 Protocol Version 1.1 (compression) is not supported.
 
