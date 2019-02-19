@@ -61,7 +61,7 @@ ok(-f $received_file, "File received by server B $received_file");
 my $received_content = TestAS2::slurp_file($received_file);
 is($payload, $received_content, "File received by B server matched payload sent");
 
-my $sent_file = "$dir/A/files/sync/SENT/$message_id";
+my $sent_file = "$dir/A/files/sync/SENT/$message_id.state";
 ok(-f $sent_file, "File sent to B server $sent_file");
 
 my $sent_mdn = decode_json TestAS2::slurp_file($sent_file);

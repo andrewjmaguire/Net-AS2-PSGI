@@ -56,6 +56,16 @@ sub save {
     return $file;
 }
 
+=item $file = $self->move($file, $dir, [ $ext, $text ])
+
+Move C<$file> to directory, C<$dir>, adding an optional extension C<$ext>.
+
+Debuging level C<$text> is output to the logger, if defined.
+
+Returns the path the file was moved to.
+
+=cut
+
 sub move {
     my ($self, $file, $dir, $ext, $text) = @_;
 

@@ -315,7 +315,7 @@ sub send { ## no critic (ProhibitBuiltinHomonyms)
 
     my $state = Net::AS2::PSGI::StateHandler->new($message_id, $log);
 
-    my $handler = $as2->{FileHandlerClass}->new($message_id, $log) or die "FileHandlerClass is not configured";
+    my $handler = $as2->{FileHandlerClass}->new($message_id, $log) or croak "FileHandlerClass is not configured";
 
     my ($sending, $sent) = _send_directories($request, $message_id, $partnership);
 
@@ -349,11 +349,7 @@ sub send { ## no critic (ProhibitBuiltinHomonyms)
 
             my $failed_message_file = $state->move($message_file_state, $sent, '.failed', " ($mdn->{status_text})");
         }
-        elsif ($mdn->{unparsable}) {
-            my $sending_file = $handler->file($sending);
-
-            $handler->sending($content, $sending_file);
-
+        else {
             $response->code(HTTP_OK);
         }
 
@@ -461,7 +457,7 @@ sub receive {
 
     my $state = Net::AS2::PSGI::StateHandler->new($message_id, $log);
 
-    my $handler = $as2->{FileHandlerClass}->new($message_id, $log) or die "FileHandlerClass is not configured";
+    my $handler = $as2->{FileHandlerClass}->new($message_id, $log) or croak "FileHandlerClass is not configured";
 
     my ($receiving, $received) = _receive_directories($request, $message_id, $partnership);
 
@@ -550,7 +546,7 @@ sub MDNsend {
 
     my $state = Net::AS2::PSGI::StateHandler->new($message_id, $log);
 
-    my $handler = $as2->{FileHandlerClass}->new($message_id, $log) or die "FileHandlerClass is not configured";
+    my $handler = $as2->{FileHandlerClass}->new($message_id, $log) or croak "FileHandlerClass is not configured";
 
     my ($receiving, $received) = _receive_directories($request, $message_id, $partnership);
 
@@ -672,7 +668,7 @@ sub MDNreceive {
 
     my $state = Net::AS2::PSGI::StateHandler->new($message_id, $log);
 
-    my $handler = $as2->{FileHandlerClass}->new($message_id, $log) or die "FileHandlerClass is not configured";
+    my $handler = $as2->{FileHandlerClass}->new($message_id, $log) or croak "FileHandlerClass is not configured";
 
     my ($sending, $sent) = _send_directories($request, $message_id, $partnership);
 
@@ -737,7 +733,7 @@ sub view {
     # Display relevant partnership, blanking out private and public key text
     my $p = { %$as2 };
     map { delete $p->{$_} } grep { ref($p->{$_}) } keys %$p;
-    map { $p->{$_} = '...' } grep { /Key|Certificate/ && ! /File/ } keys %$p;
+    map { $p->{$_} = '...' } grep { /^.+Certificate|Key/ && ! /File/ } keys %$p;
 
     my $content  = JSON::XS->new->ascii->canonical->encode($p);
 

@@ -2,7 +2,7 @@
 # description: Test PSGI GET /view partnership interface
 #
 
-use Test::More tests => 10;
+use Test::More tests => 12;
 
 use strict;
 use warnings;
@@ -34,9 +34,12 @@ $json = decode_json($resp->content) or diag explain $resp;
 
 is(ref($json), 'HASH', 'received A response');
 
+like($json->{CertificateDirectory}, qr{/t/A/certificates$}, 'CertificateDirectory is displayed');
+
 my $a2b_sync = {
-    'CertificateDirectory'         => '...',
+    'CertificateDirectory'         => $json->{CertificateDirectory},
     'Encryption'                   => '3des',
+    'FileHandlerClass'             => 'Net::AS2::PSGI::FileHandler',
     'Mdn'                          => 'sync',
     'MyCertificateFile'            => 'A.cert',
     'MyEncryptionCertificate'      => '...',
@@ -68,9 +71,13 @@ like($resp->content_type, qr{application/json}, 'returned JSON response');
 $json = decode_json($resp->content) or diag explain $resp;
 
 is(ref($json), 'HASH', 'received A response');
+
+like($json->{CertificateDirectory}, qr{/t/A/certificates$}, 'CertificateDirectory is displayed');
+
 my $a2b_async = {
-    'CertificateDirectory'         => '...',
+    'CertificateDirectory'         => $json->{CertificateDirectory},
     'Encryption'                   => '3des',
+    'FileHandlerClass'             => 'Net::AS2::PSGI::FileHandler',
     'Mdn'                          => 'async',
     'MyCertificateFile'            => 'A.cert',
     'MyEncryptionCertificate'      => '...',

@@ -59,7 +59,7 @@ my $receiving_state = TestAS2::slurp_file($receiving_state_file);
 my $message = Net::AS2::Message->create_from_serialized_state($receiving_state);
 is($message->message_id, $message_id, 'File state matches message id');
 
-my $sending_file = "$dir/B/files/B2A/async/SENDING/$message_id";
+my $sending_file = "$dir/B/files/B2A/async/SENDING/$message_id.state";
 ok(-f $sending_file, "File being sent from B $sending_file");
 
 my $sending_content = decode_json TestAS2::slurp_file($sending_file);
@@ -82,7 +82,7 @@ ok(-f $received_file, "File received by server A $received_file");
 my $received_content = TestAS2::slurp_file($received_file);
 is($payload, $received_content, "File received by B server matched payload sent");
 
-my $sent_file = "$dir/B/files/B2A/async/SENT/$message_id";
+my $sent_file = "$dir/B/files/B2A/async/SENT/$message_id.state";
 ok(-f $sent_file, "File sent by B server $sent_file");
 
 my $sent_content = decode_json TestAS2::slurp_file($sent_file);

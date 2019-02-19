@@ -28,16 +28,10 @@ $Net::AS2::PSGI::FILE_DIR        = "$dir/files";
 # Initialise directories
 Net::AS2::PSGI->init();
 
-my $app_send        = Net::AS2::PSGI->to_psgi('send');
-my $app_receive     = Net::AS2::PSGI->to_psgi('receive');
-my $app_mdn_send    = Net::AS2::PSGI->to_psgi('send_mdn');
-my $app_mdn_receive = Net::AS2::PSGI->to_psgi('receive_mdn');
-my $app_view        = Net::AS2::PSGI->view_psgi();
-
 builder {
 #    enable "LogDispatch", logger => $logger;
 #    enable 'StackTrace';
 #    enable 'Lint';
-    mount "/view"     => $app_view;
+    mount "/view"     => Net::AS2::PSGI->view_psgi();
     mount "/"         => Net::AS2::PSGI->app_psgi();
 };

@@ -31,7 +31,11 @@ sub new {
     return $self;
 }
 
+=back
+
 =head1 METHODS
+
+=over 4
 
 =item $message_id = $self->message_id([ id ])
 
