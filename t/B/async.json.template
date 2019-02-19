@@ -1,4 +1,4 @@
-{
+{ # Asynchronous AS2 configuration
     "Mdn"                    : "async",
     "MyId"                   : "B",
     "PartnerId"              : "A",
@@ -8,5 +8,5 @@
     "MyCertificateFile"      : "B.cert",
     "PartnerCertificateFile" : "A.cert",
     "Signature"              : "sha256",
-    "Encryption"             : "3des"
+    "Encryption"             : "3des",
 }
