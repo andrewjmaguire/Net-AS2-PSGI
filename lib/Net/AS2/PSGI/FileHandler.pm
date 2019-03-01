@@ -33,7 +33,7 @@ sub receiving {
 
     $self->write($receiving_file, $content);
 
-    $self->logger(debug => "Receiving file $receiving_file");
+    $self->logger(debug => "Receiving content saved in $receiving_file");
 
     return $receiving_file;
 
@@ -57,7 +57,9 @@ sub received {
 
     rename $receiving_file, $received_file;
 
-    $self->logger(debug => "Received file $received_file");
+    my $content_filename = $message->filename // '';
+
+    $self->logger(debug => "Received '$content_filename' saved in file $received_file");
 
     return $received_file;
 

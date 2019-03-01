@@ -562,10 +562,6 @@ sub MDNsend {
         $message->message_id,
     );
 
-#    my $receiving_file = $handler->receiving($message->content, $receiving);
-#
-#    $handler->received($receiving_file, $received, $message);
-
     my $code;
     if ($mdn_resp->is_success) {
         $code = HTTP_OK;
