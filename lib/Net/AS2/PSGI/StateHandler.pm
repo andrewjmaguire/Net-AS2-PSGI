@@ -17,7 +17,7 @@ use parent 'Net::AS2::PSGI::File';
 
 =over 4
 
-=item $self->file($dir, [$ext])
+=item $self->file( $dir, $ext )
 
 Return the state file in the given directory, <$dir>.
 
@@ -34,7 +34,7 @@ sub file {
 
 }
 
-=item $file = $self->save($content, $dir, [ $ext ])
+=item $file = $self->save( $content, $dir, $ext )
 
 Write C<$content> to state file with extension C<$ext> in directory, C<$dir>.
 
@@ -56,7 +56,7 @@ sub save {
     return $file;
 }
 
-=item $file = $self->move($file, $dir, [ $ext, $text ])
+=item $file = $self->move( $file, $dir, $ext, $text )
 
 Move C<$file> to directory, C<$dir>, adding an optional extension C<$ext>.
 
@@ -83,11 +83,9 @@ sub move {
 }
 
 
-=item $content = $self->retrieve($file, $text)
+=item $content = $self->retrieve( $file, $text )
 
-Read state file, C<$file>.
-
-Returns the content of the file.
+Read state file, C<$file>, returning its content.
 
 Debuging level C<$text> is output to the logger, if defined.
 

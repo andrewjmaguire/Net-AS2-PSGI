@@ -37,9 +37,9 @@ sub new {
 
 =over 4
 
-=item $message_id = $self->message_id([ id ])
+=item $message_id = $self->message_id( $id )
 
-Set or get the current message_id.
+Set, if given C<$id>, or get the current message_id.
 
 =cut
 
@@ -56,7 +56,7 @@ sub message_id {
     return $self->{message_id};
 }
 
-=item $file = $self->file( dir, [ ext ] )
+=item $file = $self->file( $dir, $ext )
 
 Return suitable file name in the given directory, C<dir>, using the
 associated message id and optional extension, C<ext>.
@@ -71,7 +71,7 @@ sub file {
     return sprintf('%s/%s%s', $dir, $self->{message_filename}, $ext);
 }
 
-=item $self->logger( level => text )
+=item $self->logger( $level, $text )
 
 Outputs a message to the PSGI logger at the given level, if a PSGI
 logger has been defined.

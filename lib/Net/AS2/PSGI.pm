@@ -119,14 +119,24 @@ L<Net::AS2> hash key.
 =item partnership_dir
 
 This directory contains JSON files that each define a partnership
-between two AS2 Protocol Servers. The partnership file contains the key
-names defined in L<Net::AS2>.
+between two AS2 Protocol Servers.
 
 Subdirectories may be used, with the whole relative path being used to
 define the partnership name.
 
 For security, this directory and the files within it should not be
 world readable.
+
+The partnership file contains the key names defined in L<Net::AS2>, along with the following additions:
+
+=over 4
+
+=item FileHandlerClass
+
+A Perl class that can process the files being sent and received via the AS2 protocol.
+See L<Net::AS2::PSGI::FileHandler>, default is "Net::AS2::PSGI::FileHandler".
+
+=back
 
 =item file_dir
 
@@ -204,8 +214,11 @@ sub init {
 
 =item view_psgi ()
 
-Class Method returning PSGI application for 'GET'ting a view of
-partnership data.
+Class Method returning a PSGI application for viewing partnerships.
+
+This app is B<not> part of the AS2 specification. It may be useful
+for checking end-to-end access between partners and confirming
+partnership configurations.
 
 =cut
 
@@ -224,7 +237,7 @@ sub view_psgi {
 
 =item app_psgi ()
 
-Class Method returning PSGI application for AS2.
+Class Method returning a PSGI application for AS2.
 
 =cut
 
@@ -398,7 +411,7 @@ The data is received as the content of the POST request along with the following
 
 =over 4
 
-=item MESSAGE-ID
+=item Message-Id
 
 The AS2 Message ID.
 
@@ -408,25 +421,25 @@ The Message ID is validated to ensure it conforms to RFC 2822.
 
 The Content-Type of the data being received.
 
-=item AS2-VERSION
+=item AS2-Version
 
 The AS2 Protocol version, it should be in the form 1.x. Only 1.0 is supported.
 
 See RFC 4130 for further details about the different version numbers.
 
-=item AS2-FROM
+=item AS2-From
 
 The partner's AS2 ID.
 
 This value should match the PartnerId in the C<partnership.json> file.
 
-=item AS2-TO
+=item AS2-To
 
 The receiver's (i.e. this application's) AS2 ID.
 
 This value should match the MyId in the C<partnership.json> file.
 
-=item DISPOSITION-NOTIFICATION-OPTIONS
+=item Disposition-Notification-Options
 
 I<Optional> This header is only defined if digital signatures are requested.
 
@@ -435,7 +448,7 @@ An example is:
 
  signed-receipt-protocol=required, pkcs7-signature; signed-receipt-micalg=required, sha256
 
-=item RECEIPT-DELIVERY-OPTION
+=item Receipt-Delivery-Option
 
 I<Optional> This header is only defined for Asynchronous mode.
 
@@ -631,19 +644,19 @@ The Message ID is validated to ensure it conforms to RFC 2822.
 
 The Content-Type of the data being received.
 
-=item AS2-VERSION
+=item AS2-Version
 
 The AS2 Protocol version, it should be in the form 1.x. Only 1.0 is supported.
 
 See RFC 4130 for further details about the different version numbers.
 
-=item AS2-FROM
+=item AS2-From
 
 The partner's AS2 ID.
 
 This value should match the PartnerId in the C<partnership.json> file.
 
-=item AS2-TO
+=item AS2-To
 
 The receiver's (i.e. this application's) AS2 ID.
 
@@ -880,9 +893,9 @@ using AS2 synchronous and AS2 asynchronous transfer modes.
 
 =head1 SEE ALSO
 
-L<Net::AS2>
+L<Net::AS2>, L<Net::AS2::PSGI::FileHandler>, L<Net::AS2::PSGI::StateHandler>
 
-L<RFC 4130|https://www.ietf.org/rfc/rfc4130.txt>, L<RFC 3798|https://www.ietf.org/rfc/rfc3798.txt>
+L<RFC 4130|https://www.ietf.org/rfc/rfc4130.txt>, L<RFC 3798|https://www.ietf.org/rfc/rfc3798.txt>,
 L<RFC 822|https://www.ietf.org/rfc/rfc822.txt>, L<RFC 2822|https://www.ietf.org/rfc/rfc2822.txt>
 
 =head1 LICENSE AND COPYRIGHT
@@ -893,14 +906,38 @@ This is free software; you can redistribute it and/or modify it under the same t
 
 =head1 BUGS AND LIMITATIONS
 
-No known bugs.
+=over 4
+
+=item Content-Transfer-Encoding: binary and LF line-endings
+
+During testing against an Oracle B2B implementation, an issue with
+Digital Signatures was found. The Oracle instance was sending data
+with LF line-endings using binary Content-Transfer-Encoding.
+
+The L<Crypt::SMIME> validation failed the signature check.
+
+A similar scenario occurred when testing with RSSBus software. In that
+case, just sending the file with CRLF line-endings was successful.  It
+was not possible to test whether the same workaround would work with
+Oracle B2B. Another possibility is to configure sending/receiving base64
+Content-Transfer-Encoding requests.
+
+The issue may lie in the OpenSSL canonicalisation code when handling
+binary Content-Transfer-Encoding data. It appears to incorrectly apply
+canonicalisation of binary specified data.  (OpenSSL version 1.1.0g).
+
+=item AS2 1.1 compression
 
 The AS2 Protocol Version 1.1 (compression) is not supported.
+
+=item Filesystem initiated interface
 
 Unlike other AS2 software, this module does not provide a means to
 send file to partners simply by copying a file to a designated 'send'
 directory. That functionality could probably be created by combining
 L<AnyEvent>, L<Twiggy> and this PSGI interface.
+
+=back
 
 =head1 DISCLAIMER OF WARRANTY
 
