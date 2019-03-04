@@ -28,7 +28,7 @@ ok($b->port, ' on port: ' . $b->port);
 TestAS2::configure('A', '.', { PORT_A => $a->port, PORT_B => $b->port });
 TestAS2::configure('B', 'B2A', { PORT_A => $a->port, PORT_B => $b->port });
 
-my $payload = "PAYLOAD\r\n"; # Must use DOS line endings
+my $payload = "PAYLOAD\r\n";
 
 my $message_id = 'sync-abcde@A2B';
 

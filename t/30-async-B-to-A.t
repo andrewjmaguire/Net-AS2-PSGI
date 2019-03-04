@@ -29,13 +29,13 @@ ok($b->port, ' on port: ' . $b->port);
 TestAS2::configure('A', 'A2B', { PORT_A => $a->port, PORT_B => $b->port });
 TestAS2::configure('B', 'B2A', { PORT_A => $a->port, PORT_B => $b->port });
 
-my $payload = "PAYLOAD\r\n"; # Must use DOS line endings
+my $payload = "PAYLOAD\r\n";
 
 my $message_id = 'async-54321@B2A';
 
 my $request = POST(
     'http://127.0.0.1:' . $b->port . '/send/B2A/async',
-    MessageId      => "<$message_id>",
+    MessageId      => $message_id,
     'Content-Type' => 'text/plain',
     Subject        => 'Sending payload asynchronous request needing MDN receipt',
     Content        => $payload,
@@ -68,7 +68,7 @@ is($sending_content->{pending},   1, 'Confirmation that file being sent is still
 
 my $mdn_request = POST(
     'http://127.0.0.1:' . $a->port . '/MDNsend/A2B/async',
-    MessageId      => "<$message_id>",
+    MessageId      => $message_id,
 );
 
 my $resp = $a->request($mdn_request);

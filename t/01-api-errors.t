@@ -18,7 +18,7 @@ is(ref($a), 'Plack::Test::MockHTTP', 'Started Mocked AS2 server');
 
 TestAS2::configure('A', 'A2B', { PORT_A => 4080, PORT_B => 5080 });
 
-my $payload = "PAYLOAD\r\n"; # Must use DOS line endings
+my $payload = "PAYLOAD\r\n";
 
 # Send payload with invalid Message ID.
 my $resp = $a->request(POST(

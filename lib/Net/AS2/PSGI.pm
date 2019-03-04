@@ -292,7 +292,13 @@ The Content-Type of the data being sent.
 
 =item Subject
 
-The subject is an arbitrary brief one-line string.
+I<Optional.>
+The subject is an arbitrary brief one-line string. Default is "AS2 Message".
+
+=item Filename
+
+I<Optional.>
+Sets the Content-Disposition filename. Default is "payload".
 
 =back
 
@@ -325,9 +331,10 @@ sub send { ## no critic (ProhibitBuiltinHomonyms)
 
     my $content      = $request->content;
     my %mime_options = (
-        'MessageId'    => "<$message_id>",
-        'Type'         => $headers->header('Content-Type') // '',
-        'Subject'      => $headers->header('Subject')      // '',
+        'MessageId'    => $message_id,
+        'Type'         => scalar($headers->content_type),
+        'Subject'      => scalar($headers->header('Subject')),
+        'Filename'     => scalar($headers->header('Filename')),
     );
     my ($mdn, $mic, $mic_alg) = $as2->send($content, %mime_options);
 
@@ -335,24 +342,24 @@ sub send { ## no critic (ProhibitBuiltinHomonyms)
 
     $handler->sending($content, $sending_file);
 
-    if ($as2->{Mdn} eq 'async') {
-        my $response = $request->new_response();
+    my $response = $request->new_response(HTTP_OK);
 
-        if ($mdn->{status_text} =~ qr{HTTP failure: (\d+) (.*)}) {
-            $response->code($1);
-            $response->body($2);
+    if ($mdn->{status_text} =~ qr{HTTP failure: (\d+) (.*)}) {
+        $response->code($1);
+        $response->body($2);
 
-            # overwrite state file in SENDING directory
-            $state_content = JSON::XS->new->ascii->canonical->encode({ %$mdn });
+        # overwrite state file in SENDING directory
+        $state_content = JSON::XS->new->ascii->canonical->encode({ %$mdn });
 
-            $message_file_state = $state->save($state_content, $sending); # convert to simple hash
+        $message_file_state = $state->save($state_content, $sending); # convert to simple hash
 
-            my $failed_message_file = $state->move($message_file_state, $sent, '.failed', " ($mdn->{status_text})");
-        }
-        else {
-            $response->code(HTTP_OK);
-        }
+        $state->move($message_file_state, $sent, '.failed', " ($mdn->{status_text})");
 
+        $handler->sent($sending_file, $sent, 0);
+
+        return $response;
+    }
+    elsif ($as2->{Mdn} eq 'async') {
         return $response;
     }
 
@@ -365,7 +372,6 @@ sub send { ## no critic (ProhibitBuiltinHomonyms)
         %$mdn, # convert to simple hash
     });
 
-    my $response = $request->new_response(HTTP_OK);
     $response->body($body);
     $response->headers([
         'OriginalMessageId' => $mdn->original_message_id,
